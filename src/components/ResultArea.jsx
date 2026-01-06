@@ -1,9 +1,10 @@
-
 import { useState, useRef, useEffect } from 'react';
 import { Download, RefreshCcw, Eraser, Check, X, Undo, Redo, ZoomIn, ZoomOut } from 'lucide-react';
+import CompareSlider from './CompareSlider';
 
 export default function ResultArea({ originalImage, processedImage, onReset }) {
     const [isEditing, setIsEditing] = useState(false);
+    const [viewMode, setViewMode] = useState('side-by-side'); // 'side-by-side' or 'compare'
     const [brushSize, setBrushSize] = useState(20);
     const [zoomLevel, setZoomLevel] = useState(1);
     const [currentImageBlob, setCurrentImageBlob] = useState(processedImage);
@@ -29,7 +30,6 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
         value: '', // Hex, gradient string, or url
     });
 
-    // Canvas refs
     // Canvas refs
     const canvasRef = useRef(null);
     const contextRef = useRef(null);
@@ -398,22 +398,9 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
         cursorRef.current.style.left = `${clientX}px`;
         cursorRef.current.style.top = `${clientY}px`;
 
-        // Calculate visual scaling of the brush
-        // If fit mode: The image is scaled down/up to fit checkboard.
-        // We need to know the RATIO of displayed width to natural width.
-        // But getting that React-style is hard without LayoutEffect/State reading rect.
-        // However, 'getCoordinates' gives us scale factors!
-        // But updateCursor runs before we might have these specific scales handy for cursor size?
-        // Actually, for cursor visualization, we want screen pixels.
-        // BrushSize is in IMAGE pixels.
-        // So CursorSize = BrushSize / ScaleFactor. (If 1000px image is shown as 500px, ScaleX = 2. Brush 20px -> 10px screen).
-
         let visualScale = 1;
         if (canvasRef.current) {
             const rect = canvasRef.current.getBoundingClientRect();
-            // scaleX = natural / displayed
-            // displayed = natural / scaleX
-            // so visual / natural = 1 / scaleX
             visualScale = rect.width / canvasRef.current.width;
         }
 
@@ -435,6 +422,66 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
     };
 
 
+    // Touch Handling
+    const handleTouchStart = (e) => {
+        if (!contextRef.current) return;
+        e.preventDefault(); // Prevent scrolling
+        const touch = e.touches[0];
+
+        // Mock nativeEvent structure for getCoordinates
+        const mockNativeEvent = {
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        };
+
+        const { offsetX, offsetY } = getCoordinates(mockNativeEvent);
+        prevPosRef.current = { x: offsetX, y: offsetY };
+        isDrawingRef.current = true;
+        stampBrush(offsetX, offsetY);
+    };
+
+    const handleTouchMove = (e) => {
+        if (!isDrawingRef.current || !contextRef.current) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+
+        // Mock nativeEvent structure for getCoordinates
+        const mockNativeEvent = {
+            clientX: touch.clientX,
+            clientY: touch.clientY
+        };
+
+        // Update cursor manually for touch
+        if (cursorRef.current) {
+            cursorRef.current.style.left = `${touch.clientX}px`;
+            cursorRef.current.style.top = `${touch.clientY}px`;
+            cursorRef.current.style.display = 'block';
+        }
+
+        const { offsetX, offsetY } = getCoordinates(mockNativeEvent);
+
+        // Interpolate (Reuse logic)
+        const dist = Math.hypot(offsetX - prevPosRef.current.x, offsetY - prevPosRef.current.y);
+        const step = brushSize * 0.1;
+
+        if (dist > step) {
+            const angle = Math.atan2(offsetY - prevPosRef.current.y, offsetX - prevPosRef.current.x);
+            for (let i = 0; i < dist; i += step) {
+                const x = prevPosRef.current.x + Math.cos(angle) * i;
+                const y = prevPosRef.current.y + Math.sin(angle) * i;
+                stampBrush(x, y);
+            }
+            prevPosRef.current = { x: offsetX, y: offsetY };
+        }
+        stampBrush(offsetX, offsetY);
+    };
+
+    const handleTouchEnd = () => {
+        if (cursorRef.current) cursorRef.current.style.display = 'none';
+        stopDrawing();
+    };
+
+
     return (
         <div className="fade-in">
             {isEditing ? (
@@ -451,7 +498,7 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
                             backgroundColor: 'rgba(255, 255, 255, 0.2)',
                             borderRadius: '50%',
                             zIndex: 9999,
-                            display: 'none', // Hidden by default, shown on hover
+                            display: 'none', // Hidden by default
                         }}
                     />
 
@@ -530,7 +577,7 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
                         </div>
                     </div>
 
-                    {/* REFINE TOOLS - Always visible in Edit Mode now */}
+                    {/* REFINE TOOLS */}
                     <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
                         {/* Brush Settings: Size, Hardness, Opacity */}
                         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', flexDirection: 'column' }}>
@@ -573,49 +620,65 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
 
                     <div className="checkerboard" style={{
                         overflow: 'auto',
-                        maxHeight: '600px',
+                        width: '100%',
+                        maxWidth: '600px', // Limit max width
+                        margin: '0 auto', // Center
+                        aspectRatio: '1 / 1', // Force Square Aspect Ratio
                         border: '1px solid var(--color-border)',
                         borderRadius: 'var(--radius-md)',
                         display: 'flex', // Flex for container
                         position: 'relative',
                         cursor: 'none', // Hide default cursor
-                        // Dynamic Background
-                        backgroundColor: bgConfig.type === 'color' ? bgConfig.value : '#fff',
-                        backgroundImage: bgConfig.type === 'gradient'
-                            ? bgConfig.value
-                            : bgConfig.type === 'image'
-                                ? `url(${bgConfig.value})`
-                                : bgConfig.type === 'color' ? 'none' // Disable checkerboard for solid color
-                                    : undefined, // Keep checkerboard for transparent
-                        backgroundSize: bgConfig.type === 'image' ? 'cover' : undefined,
-                        backgroundPosition: 'center',
-                        backgroundRepeat: 'no-repeat'
+                        backgroundColor: '#f1f5f9', // Default background for area outside content
+                        // Dynamic Background (Applied to this container to show through transparent parts)
+                        // Note: For aspect ratio fit, we might want the background to only be under the image, 
+                        // but sticking to user request for "window in fixed 1:1 ratio".
                     }}
                         onMouseEnter={() => { if (cursorRef.current) cursorRef.current.style.display = 'block'; }}
                         onMouseLeave={() => { if (cursorRef.current) cursorRef.current.style.display = 'none'; }}
                     >
-                        <canvas
-                            ref={canvasRef}
-                            onMouseDown={startDrawing}
-                            onMouseMove={handleMouseMove}
-                            onMouseUp={stopDrawing}
-                            onMouseLeave={stopDrawing}
-                            style={
-                                scaleMode === 'fit' ? {
-                                    maxWidth: '100%',
-                                    maxHeight: '100%',
-                                    width: 'auto',
-                                    height: 'auto',
-                                    margin: 'auto',
-                                    display: 'block'
-                                } : {
-                                    width: `${imgDimensions.width * zoomLevel}px`,
-                                    height: 'auto',
-                                    margin: 'auto',
-                                    display: 'block'
+                        {/* Wrapper to center the canvas if it's smaller than the container or handle 'contain' logic */}
+                        <div style={{
+                            width: '100%',
+                            height: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            // Apply background here so it matches the image area if we want, or keep on parent.
+                            // Let's keep dynamic background on the canvas wrapper or canvas itself?
+                            // Actually, the previous implementation had it on the parent. 
+                            // Let's apply the dynamic background to a wrapper that matches the image size, 
+                            // OR just keep it simple and ensure the canvas fits the 1:1 box.
+                        }}>
+                            <canvas
+                                ref={canvasRef}
+                                onMouseDown={startDrawing}
+                                onMouseMove={handleMouseMove}
+                                onMouseUp={stopDrawing}
+                                onMouseLeave={stopDrawing}
+
+                                onTouchStart={handleTouchStart}
+                                onTouchMove={handleTouchMove}
+                                onTouchEnd={handleTouchEnd}
+
+                                style={
+                                    // Make canvas fit within the 1:1 container while maintaining aspect ratio
+                                    {
+                                        maxWidth: '100%',
+                                        maxHeight: '100%',
+                                        width: 'auto',
+                                        height: 'auto',
+                                        objectFit: 'contain',
+                                        display: 'block',
+                                        // Re-apply background config styles here so they sit behind the canvas content
+                                        backgroundImage: bgConfig.type === 'image' ? `url(${bgConfig.value})` : undefined,
+                                        backgroundColor: bgConfig.type === 'color' ? bgConfig.value : (bgConfig.type === 'transparent' ? undefined : '#fff'),
+                                        backgroundSize: 'cover',
+                                        boxShadow: '0 0 10px rgba(0,0,0,0.1)' // optional drop shadow
+                                    }
                                 }
-                            }
-                        />
+                            />
+                        </div>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem' }}>
@@ -628,140 +691,182 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
                     </div>
                 </div>
             ) : (
-                /* VIEW MODE - Refactored to Flexbox */
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2rem', marginBottom: '3rem', justifyContent: 'center' }}>
-                    {/* Original Image */}
-                    <div className="card" style={{ padding: '1rem', height: 'auto', flex: '1 1 300px', minWidth: '300px' }}>
-                        <h3 style={{ marginBottom: '1rem', fontSize: '1rem', color: 'var(--color-text-light)' }}>Original Image</h3>
-                        <div style={{
-                            borderRadius: 'var(--radius-md)',
-                            overflow: 'hidden',
-                            height: '400px',
-                            backgroundColor: '#f1f5f9',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center'
-                        }}>
-                            {/* Keep image centered and taking mostly full size but contained */}
-                            {originalUrl ? (
-                                <img
-                                    src={originalUrl}
-                                    alt="Original"
-                                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-                                />
-                            ) : (
-                                <div style={{ color: 'var(--color-text-light)' }}>Loading...</div>
-                            )}
+                /* VIEW MODE */
+                <div>
+                    {/* View Mode Toggles */}
+                    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '2rem', gap: '1rem' }}>
+                        <div className="btn-group" style={{ display: 'flex', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+                            <button
+                                style={{
+                                    padding: '0.5rem 1rem',
+                                    backgroundColor: viewMode === 'side-by-side' ? 'var(--color-primary)' : 'transparent',
+                                    color: viewMode === 'side-by-side' ? '#fff' : 'var(--color-text)',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontWeight: 500
+                                }}
+                                onClick={() => setViewMode('side-by-side')}
+                            >
+                                Side by Side
+                            </button>
+                            <button
+                                style={{
+                                    padding: '0.5rem 1rem',
+                                    backgroundColor: viewMode === 'compare' ? 'var(--color-primary)' : 'transparent',
+                                    color: viewMode === 'compare' ? '#fff' : 'var(--color-text)',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    fontWeight: 500,
+                                    borderLeft: '1px solid var(--color-border)'
+                                }}
+                                onClick={() => setViewMode('compare')}
+                            >
+                                Compare Slider
+                            </button>
                         </div>
                     </div>
 
-                    {/* Processed Image */}
-                    <div className="card" style={{ padding: '1rem', height: 'auto', flex: '1 1 300px', minWidth: '300px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                                <h3 style={{ fontSize: '1rem', color: 'var(--color-text-light)', margin: 0 }}>Background Removed</h3>
-                                {processedImage && (
-                                    <button
-                                        className="btn btn-outline"
-                                        style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}
-                                        onClick={() => setIsEditing(true)}
-                                    >
-                                        <Eraser size={16} /> Refine / Erase
-                                    </button>
-                                )}
+                    {viewMode === 'compare' ? (
+                        <CompareSlider original={originalUrl} processed={processedUrl} />
+                    ) : (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2rem', marginBottom: '3rem', justifyContent: 'center' }}>
+                            {/* Original Image */}
+                            <div className="card" style={{ padding: '1rem', height: 'auto', flex: '1 1 300px', minWidth: '300px' }}>
+                                <h3 style={{ marginBottom: '1rem', fontSize: '1rem', color: 'var(--color-text-light)' }}>Original Image</h3>
+                                <div style={{
+                                    borderRadius: 'var(--radius-md)',
+                                    overflow: 'hidden',
+                                    height: '400px',
+                                    backgroundColor: '#f1f5f9',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center'
+                                }}>
+                                    {/* Keep image centered and taking mostly full size but contained */}
+                                    {originalUrl ? (
+                                        <img
+                                            src={originalUrl}
+                                            alt="Original"
+                                            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                                        />
+                                    ) : (
+                                        <div style={{ color: 'var(--color-text-light)' }}>Loading...</div>
+                                    )}
+                                </div>
                             </div>
 
-                            {/* Background Controls in View Mode */}
-                            <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                {/* Clear */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <button className="btn btn-outline" style={{ padding: '0.25rem' }} onClick={() => setBgConfig({ type: 'transparent', value: '' })} title="Clear Background">
-                                        <div style={{ width: 16, height: 16, background: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)', backgroundSize: '8px 8px', backgroundColor: '#fff', border: '1px solid #ddd' }}></div>
-                                    </button>
+                            {/* Processed Image */}
+                            <div className="card" style={{ padding: '1rem', height: 'auto', flex: '1 1 300px', minWidth: '300px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                        <h3 style={{ fontSize: '1rem', color: 'var(--color-text-light)', margin: 0 }}>Background Removed</h3>
+                                        {processedImage && (
+                                            <button
+                                                className="btn btn-outline"
+                                                style={{ padding: '0.25rem 0.75rem', fontSize: '0.875rem' }}
+                                                onClick={() => setIsEditing(true)}
+                                            >
+                                                <Eraser size={16} /> Refine / Erase
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {/* Background Controls in View Mode */}
+                                    <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                                        {/* Clear */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <button className="btn btn-outline" style={{ padding: '0.25rem' }} onClick={() => setBgConfig({ type: 'transparent', value: '' })} title="Clear Background">
+                                                <div style={{ width: 16, height: 16, background: 'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)', backgroundSize: '8px 8px', backgroundColor: '#fff', border: '1px solid #ddd' }}></div>
+                                            </button>
+                                        </div>
+
+                                        <div style={{ width: 1, height: 20, backgroundColor: 'var(--color-border)' }}></div>
+
+                                        {/* Color Section */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-light)' }}>Color:</span>
+                                            <input
+                                                type="color"
+                                                value={bgConfig.type === 'color' ? bgConfig.value : '#ffffff'}
+                                                onChange={(e) => setBgConfig({ type: 'color', value: e.target.value })}
+                                                style={{ width: '24px', height: '24px', padding: 0, border: 'none', cursor: 'pointer' }}
+                                                title="Custom Color"
+                                            />
+                                            {/* Quick Presets */}
+                                            {['#ffffff', '#000000', '#ff0000'].map(c => (
+                                                <button
+                                                    key={c}
+                                                    onClick={() => setBgConfig({ type: 'color', value: c })}
+                                                    style={{
+                                                        width: '20px', height: '20px',
+                                                        backgroundColor: c,
+                                                        border: '1px solid #ddd',
+                                                        cursor: 'pointer',
+                                                        borderRadius: '4px'
+                                                    }}
+                                                    title={c}
+                                                />
+                                            ))}
+                                        </div>
+
+                                        <div style={{ width: 1, height: 20, backgroundColor: 'var(--color-border)' }}></div>
+
+                                        {/* Image Section */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-light)' }}>Image:</span>
+                                            <label className="btn btn-outline" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', cursor: 'pointer' }} title="Upload Background Image">
+                                                Upload
+                                                <input
+                                                    type="file"
+                                                    accept="image/*"
+                                                    onChange={(e) => {
+                                                        if (e.target.files && e.target.files[0]) {
+                                                            const url = URL.createObjectURL(e.target.files[0]);
+                                                            setBgConfig({ type: 'image', value: url });
+                                                        }
+                                                    }}
+                                                    style={{ display: 'none' }}
+                                                />
+                                            </label>
+                                        </div>
+                                    </div>
                                 </div>
-
-                                <div style={{ width: 1, height: 20, backgroundColor: 'var(--color-border)' }}></div>
-
-                                {/* Color Section */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-light)' }}>Color:</span>
-                                    <input
-                                        type="color"
-                                        value={bgConfig.type === 'color' ? bgConfig.value : '#ffffff'}
-                                        onChange={(e) => setBgConfig({ type: 'color', value: e.target.value })}
-                                        style={{ width: '24px', height: '24px', padding: 0, border: 'none', cursor: 'pointer' }}
-                                        title="Custom Color"
-                                    />
-                                    {/* Quick Presets */}
-                                    {['#ffffff', '#000000', '#ff0000'].map(c => (
-                                        <button
-                                            key={c}
-                                            onClick={() => setBgConfig({ type: 'color', value: c })}
-                                            style={{
-                                                width: '20px', height: '20px',
-                                                backgroundColor: c,
-                                                border: '1px solid #ddd',
-                                                cursor: 'pointer',
-                                                borderRadius: '4px'
-                                            }}
-                                            title={c}
+                                <div className="checkerboard" style={{
+                                    borderRadius: 'var(--radius-md)',
+                                    overflow: 'hidden',
+                                    height: '400px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    border: '1px solid var(--color-border)',
+                                    // Dynamic Background
+                                    backgroundColor: bgConfig.type === 'color' ? bgConfig.value : '#fff',
+                                    backgroundImage: bgConfig.type === 'gradient'
+                                        ? bgConfig.value
+                                        : bgConfig.type === 'image'
+                                            ? `url(${bgConfig.value})`
+                                            : bgConfig.type === 'color' ? 'none'
+                                                : undefined,
+                                    backgroundSize: bgConfig.type === 'image' ? 'cover' : undefined,
+                                    backgroundPosition: 'center',
+                                    backgroundRepeat: 'no-repeat'
+                                }}>
+                                    {processedUrl ? (
+                                        <img
+                                            src={processedUrl}
+                                            alt="Processed"
+                                            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
                                         />
-                                    ))}
-                                </div>
-
-                                <div style={{ width: 1, height: 20, backgroundColor: 'var(--color-border)' }}></div>
-
-                                {/* Image Section */}
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--color-text-light)' }}>Image:</span>
-                                    <label className="btn btn-outline" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', cursor: 'pointer' }} title="Upload Background Image">
-                                        Upload
-                                        <input
-                                            type="file"
-                                            accept="image/*"
-                                            onChange={(e) => {
-                                                if (e.target.files && e.target.files[0]) {
-                                                    const url = URL.createObjectURL(e.target.files[0]);
-                                                    setBgConfig({ type: 'image', value: url });
-                                                }
-                                            }}
-                                            style={{ display: 'none' }}
-                                        />
-                                    </label>
+                                    ) : (
+                                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem', padding: '1rem', textAlign: 'center' }}>
+                                            <div className="spinner" style={{ color: 'var(--color-primary)' }}></div>
+                                            <p style={{ color: 'var(--color-text-light)', fontSize: '0.875rem' }}>This may take while but you will get the highest quality possible. <br /> Almost there...</p>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
-                        <div className="checkerboard" style={{
-                            borderRadius: 'var(--radius-md)',
-                            overflow: 'hidden',
-                            height: '400px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            border: '1px solid var(--color-border)',
-                            // Dynamic Background
-                            backgroundColor: bgConfig.type === 'color' ? bgConfig.value : '#fff',
-                            backgroundImage: bgConfig.type === 'gradient'
-                                ? bgConfig.value
-                                : bgConfig.type === 'image'
-                                    ? `url(${bgConfig.value})`
-                                    : bgConfig.type === 'color' ? 'none'
-                                        : undefined,
-                            backgroundSize: bgConfig.type === 'image' ? 'cover' : undefined,
-                            backgroundPosition: 'center',
-                            backgroundRepeat: 'no-repeat'
-                        }}>
-                            {processedUrl ? (
-                                <img
-                                    src={processedUrl}
-                                    alt="Processed"
-                                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-                                />
-                            ) : (
-                                <div className="spinner" style={{ color: 'var(--color-primary)' }}></div>
-                            )}
-                        </div>
-                    </div>
+                    )}
                 </div>
             )}
 
