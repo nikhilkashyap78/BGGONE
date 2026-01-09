@@ -135,20 +135,23 @@ export default function ResultArea({ originalImage, processedImage, onReset }) {
 
         ctx.clearRect(0, 0, brushSize, brushSize);
 
-        // Create Radial Gradient for Hardness
-        const innerRadius = radius * (brushHardness / 100);
-
-        const gradient = ctx.createRadialGradient(radius, radius, innerRadius, radius, radius, radius);
-        gradient.addColorStop(0, 'rgba(0,0,0,1)'); // Opaque center
-        if (brushHardness < 100) {
-            gradient.addColorStop(1, 'rgba(0,0,0,0)'); // Transparent edge
+        if (brushHardness >= 100) {
+            // Solid circle for 100% hardness (fixes disappeared brush)
+            ctx.fillStyle = 'rgba(0,0,0,1)';
+            ctx.beginPath();
+            ctx.arc(radius, radius, radius, 0, Math.PI * 2);
+            ctx.fill();
         } else {
-            gradient.addColorStop(0.99, 'rgba(0,0,0,1)');
-            gradient.addColorStop(1, 'rgba(0,0,0,0)');
-        }
+            // Create Radial Gradient for Hardness
+            const innerRadius = radius * (brushHardness / 100);
+            const gradient = ctx.createRadialGradient(radius, radius, innerRadius, radius, radius, radius);
 
-        ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, brushSize, brushSize);
+            gradient.addColorStop(0, 'rgba(0,0,0,1)'); // Opaque center
+            gradient.addColorStop(1, 'rgba(0,0,0,0)'); // Transparent edge
+
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, brushSize, brushSize);
+        }
 
     }, [brushSize, brushHardness]);
 
